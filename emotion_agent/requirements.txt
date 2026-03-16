@@ -1,0 +1,5 @@
+gradio>=4.0.0
+openai>=1.0.0
+huggingface_hub<1.0
+fastapi<0.114
+pydantic<2.11
