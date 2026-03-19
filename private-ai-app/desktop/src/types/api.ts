@@ -1,5 +1,6 @@
 export type UserRole = "admin" | "member";
 export type UserStatus = "active" | "blocked";
+export type ThinkingMode = "standard" | "thinking";
 
 export interface UserInfo {
   id: string;

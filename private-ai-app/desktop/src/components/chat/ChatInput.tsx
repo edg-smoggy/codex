@@ -30,7 +30,8 @@ export function ChatInput({ value, disabled, streaming, onChange, onSend, onStop
             value={value}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 onSend();
               }
@@ -38,7 +39,13 @@ export function ChatInput({ value, disabled, streaming, onChange, onSend, onStop
             aria-label="消息输入框"
           />
           <div className="input-actions">
-            <button className="input-action-btn" type="button" title="上传文件" aria-label="上传文件">
+            <button
+              className="input-action-btn"
+              type="button"
+              title="文件上传功能开发中"
+              aria-label="上传文件"
+              disabled
+            >
               📎
             </button>
             {streaming ? (
@@ -52,7 +59,7 @@ export function ChatInput({ value, disabled, streaming, onChange, onSend, onStop
             )}
           </div>
         </div>
-        <div className="input-hint">AI Hub 可能会犯错，请核实重要信息</div>
+        <div className="input-hint">Enter 换行，Ctrl/⌘ + Enter 发送。AI Hub 可能会犯错，请核实重要信息</div>
       </div>
     </div>
   );

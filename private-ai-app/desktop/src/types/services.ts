@@ -4,6 +4,7 @@ import type {
   MessageItem,
   StreamMeta,
   StreamUsage,
+  ThinkingMode,
   UsageDaily,
 } from "./api";
 import type { ApiKeyItem, DashboardStats, LogEntry, ModelConfig, SystemSettings } from "./view";
@@ -12,6 +13,8 @@ export interface StreamMessageParams {
   accessToken: string;
   message: string;
   model: string;
+  thinkingMode?: ThinkingMode;
+  regenerateAssistantId?: string;
   signal?: AbortSignal;
   conversationId?: string;
   onMeta?: (data: StreamMeta) => void;
@@ -36,6 +39,7 @@ export interface SendMessageResult {
 export interface ChatService {
   listConversations: (accessToken: string) => Promise<ConversationSummary[]>;
   listMessages: (accessToken: string, conversationId: string) => Promise<MessageItem[]>;
+  deleteConversation: (accessToken: string, conversationId: string) => Promise<void>;
   streamMessage: (params: StreamMessageParams) => Promise<void>;
   sendMessage: (params: SendMessageParams) => Promise<SendMessageResult>;
   stopStream: (controller?: AbortController) => void;

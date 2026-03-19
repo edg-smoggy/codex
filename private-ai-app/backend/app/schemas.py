@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,7 +79,9 @@ class MessageResponse(BaseModel):
 class ChatStreamRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: str = Field(min_length=2, max_length=120)
-    message: str = Field(min_length=1, max_length=20000)
+    message: Optional[str] = Field(default=None, max_length=20000)
+    thinking_mode: Literal["standard", "thinking"] = "standard"
+    regenerate_assistant_id: Optional[str] = None
 
 
 class UsageMeResponse(BaseModel):

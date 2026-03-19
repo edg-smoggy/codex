@@ -31,6 +31,14 @@ export async function listMessages(accessToken: string, conversationId: string):
   return parseResponse<MessageItem[]>(resp);
 }
 
+export async function deleteConversation(accessToken: string, conversationId: string): Promise<void> {
+  const resp = await fetch(`${API_BASE}/conversations/${conversationId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  await parseResponse<{ status: string }>(resp);
+}
+
 export async function getUsage(accessToken: string): Promise<UsageDaily> {
   const resp = await fetch(`${API_BASE}/usage/me/daily`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -75,6 +83,8 @@ export async function streamChat(params: StreamMessageParams): Promise<void> {
       model: params.model,
       message: params.message,
       conversation_id: params.conversationId,
+      thinking_mode: params.thinkingMode || "standard",
+      regenerate_assistant_id: params.regenerateAssistantId,
     }),
   });
 
@@ -107,6 +117,8 @@ export async function streamChat(params: StreamMessageParams): Promise<void> {
           params.onChunk(payload.delta || "");
         } else if (parsed.event === "done") {
           params.onDone?.((payload.usage || payload) as StreamUsage);
+        } else if (parsed.event === "error") {
+          throw new Error(payload.detail || "Chat failed");
         }
       }
 
@@ -147,6 +159,7 @@ export function stopStream(controller?: AbortController): void {
 export const chatService: ChatService = {
   listConversations,
   listMessages,
+  deleteConversation,
   streamMessage: streamChat,
   sendMessage,
   stopStream,

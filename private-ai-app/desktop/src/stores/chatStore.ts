@@ -1,13 +1,22 @@
 import { create } from "zustand";
 
-import { getHealth, getModels, getUsage, listConversations, listMessages, streamChat } from "../api/chat";
+import {
+  deleteConversation as deleteConversationApi,
+  getHealth,
+  getModels,
+  getUsage,
+  listConversations,
+  listMessages,
+  streamChat,
+} from "../api/chat";
 import { toUIModel } from "../mocks/modelCatalog";
-import type { ConversationSummary, HealthResponse, MessageItem, StreamUsage, UsageDaily } from "../types/api";
+import type { ConversationSummary, HealthResponse, MessageItem, StreamUsage, ThinkingMode, UsageDaily } from "../types/api";
 import type { UIModel } from "../types/view";
 
 interface ChatStore {
   models: UIModel[];
   selectedModelId: string;
+  thinkingMode: ThinkingMode;
   conversations: ConversationSummary[];
   activeConversationId?: string;
   messages: MessageItem[];
@@ -22,12 +31,15 @@ interface ChatStore {
   setInput: (value: string) => void;
   clearError: () => void;
   setSelectedModel: (modelId: string) => void;
+  setThinkingMode: (mode: ThinkingMode) => void;
   setActiveConversation: (conversationId?: string) => void;
 
   hydrateBase: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>) => Promise<void>;
   hydrateMessages: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>) => Promise<void>;
   startNewConversation: () => void;
   sendMessage: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>) => Promise<void>;
+  regenerateLastAssistant: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>) => Promise<void>;
+  deleteConversation: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>, conversationId: string) => Promise<void>;
   stopStreaming: () => void;
 }
 
@@ -50,9 +62,24 @@ function buildLocalUserMessage(content: string, conversationId: string, modelId:
   };
 }
 
+function applyDoneUsage(set: (partial: Partial<ChatStore> | ((state: ChatStore) => Partial<ChatStore>)) => void, usage?: StreamUsage) {
+  if (!usage) return;
+  set((prev) => {
+    if (!prev.usage) return {};
+    return {
+      usage: {
+        ...prev.usage,
+        total_tokens: usage.daily_total_tokens,
+        total_cost: usage.daily_total_cost,
+      },
+    };
+  });
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
   models: [],
   selectedModelId: "",
+  thinkingMode: "standard",
   conversations: [],
   activeConversationId: undefined,
   messages: [],
@@ -67,6 +94,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setInput: (value) => set({ input: value }),
   clearError: () => set({ error: "" }),
   setSelectedModel: (modelId) => set({ selectedModelId: modelId }),
+  setThinkingMode: (mode) => set({ thinkingMode: mode }),
   setActiveConversation: (conversationId) => set({ activeConversationId: conversationId }),
 
   hydrateBase: async (runner) => {
@@ -94,8 +122,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return {
         models: enabledModels,
         selectedModelId,
-        conversations: sortedConversations,
         activeConversationId,
+        conversations: sortedConversations,
         usage: usageResp,
         health: healthResp,
       };
@@ -148,6 +176,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           message: text,
           model: state.selectedModelId,
           conversationId: state.activeConversationId,
+          thinkingMode: state.thinkingMode,
           signal: streamAbort.signal,
           onMeta: (meta) => {
             resolvedConversationId = meta.conversation_id;
@@ -171,19 +200,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         set({ messages: freshMessages });
       }
 
-      const usageFromDone = doneUsage;
-      if (usageFromDone && get().usage) {
-        set((prev) => {
-          if (!prev.usage) return {};
-          return {
-            usage: {
-              ...prev.usage,
-              total_tokens: usageFromDone.daily_total_tokens,
-              total_cost: usageFromDone.daily_total_cost,
-            },
-          };
-        });
-      }
+      applyDoneUsage(set, doneUsage);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         set({ error: "已停止生成" });
@@ -196,6 +213,90 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         streaming: false,
         streamAbort: undefined,
       });
+    }
+  },
+
+  regenerateLastAssistant: async (runner) => {
+    const state = get();
+    if (state.streaming || !state.activeConversationId) {
+      return;
+    }
+
+    const lastAssistant = [...state.messages].reverse().find((item) => item.role === "assistant");
+    if (!lastAssistant) {
+      set({ error: "没有可重新生成的回答" });
+      return;
+    }
+
+    const assistantIndex = state.messages.findIndex((item) => item.id === lastAssistant.id);
+    const triggerUser = [...state.messages.slice(0, assistantIndex)].reverse().find((item) => item.role === "user");
+    if (!triggerUser) {
+      set({ error: "未找到可用于重生成的用户消息" });
+      return;
+    }
+
+    const modelId = state.selectedModelId || lastAssistant.model;
+    const streamAbort = new AbortController();
+    let doneUsage: StreamUsage | undefined;
+
+    set({
+      streaming: true,
+      error: "",
+      draftAssistant: "",
+      streamAbort,
+    });
+
+    try {
+      await runner((token) =>
+        streamChat({
+          accessToken: token,
+          message: triggerUser.content,
+          model: modelId,
+          conversationId: state.activeConversationId,
+          regenerateAssistantId: lastAssistant.id,
+          thinkingMode: state.thinkingMode,
+          signal: streamAbort.signal,
+          onMeta: (meta) => {
+            set({ activeConversationId: meta.conversation_id });
+          },
+          onChunk: (delta) => {
+            set((prev) => ({ draftAssistant: prev.draftAssistant + delta }));
+          },
+          onDone: (usage) => {
+            doneUsage = usage;
+          },
+        }),
+      );
+
+      await get().hydrateBase(runner);
+      await get().hydrateMessages(runner);
+      applyDoneUsage(set, doneUsage);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        set({ error: "已停止生成" });
+      } else {
+        set({ error: err instanceof Error ? err.message : "重新生成失败" });
+      }
+    } finally {
+      set({
+        draftAssistant: "",
+        streaming: false,
+        streamAbort: undefined,
+      });
+    }
+  },
+
+  deleteConversation: async (runner, conversationId) => {
+    if (!conversationId) {
+      return;
+    }
+
+    try {
+      await runner((token) => deleteConversationApi(token, conversationId));
+      await get().hydrateBase(runner);
+      await get().hydrateMessages(runner);
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : "删除会话失败" });
     }
   },
 

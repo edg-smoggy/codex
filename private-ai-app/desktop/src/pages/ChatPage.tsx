@@ -1,6 +1,9 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
 
 import { ChatInput } from "../components/chat/ChatInput";
 import { ChatMessage } from "../components/chat/ChatMessage";
@@ -13,6 +16,9 @@ import { useUiStore } from "../stores/uiStore";
 
 export function ChatPage() {
   const navigate = useNavigate();
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
 
   const { bundle, withAuthRetry, logout } = useAuthStore(
     useShallow((state) => ({
@@ -26,6 +32,7 @@ export function ChatPage() {
     useShallow((state) => ({
       models: state.models,
       selectedModelId: state.selectedModelId,
+      thinkingMode: state.thinkingMode,
       conversations: state.conversations,
       activeConversationId: state.activeConversationId,
       messages: state.messages,
@@ -37,12 +44,15 @@ export function ChatPage() {
       error: state.error,
       setInput: state.setInput,
       setSelectedModel: state.setSelectedModel,
+      setThinkingMode: state.setThinkingMode,
       setActiveConversation: state.setActiveConversation,
       clearError: state.clearError,
       hydrateBase: state.hydrateBase,
       hydrateMessages: state.hydrateMessages,
       startNewConversation: state.startNewConversation,
       sendMessage: state.sendMessage,
+      regenerateLastAssistant: state.regenerateLastAssistant,
+      deleteConversation: state.deleteConversation,
       stopStreaming: state.stopStreaming,
     })),
   );
@@ -86,6 +96,29 @@ export function ChatPage() {
     return () => window.removeEventListener("keydown", onEsc);
   }, [ui]);
 
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const onScroll = () => {
+      const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+      stickToBottomRef.current = distance <= 120;
+    };
+
+    onScroll();
+    container.addEventListener("scroll", onScroll);
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [chat.activeConversationId]);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat.messages.length, chat.draftAssistant]);
+
   const selectedModel = useMemo(
     () => chat.models.find((item) => item.model === chat.selectedModelId),
     [chat.models, chat.selectedModelId],
@@ -96,8 +129,14 @@ export function ChatPage() {
     [chat.conversations, chat.activeConversationId],
   );
 
+  const latestAssistantId = useMemo(
+    () => [...chat.messages].reverse().find((item) => item.role === "assistant")?.id,
+    [chat.messages],
+  );
+
   const hasMessages = chat.messages.length > 0;
   const canSend = chat.input.trim().length > 0 && Boolean(chat.selectedModelId) && !chat.streaming;
+  const isKimiModel = selectedModel?.provider === "kimi";
 
   return (
     <div className={ui.chatSidebarOpen ? "app-layout sidebar-open" : "app-layout"}>
@@ -113,6 +152,12 @@ export function ChatPage() {
           chat.setActiveConversation(id);
           ui.closeChatSidebar();
         }}
+        onDeleteConversation={(id) => {
+          if (!window.confirm("确定删除这个对话吗？删除后不可恢复。")) {
+            return;
+          }
+          void chat.deleteConversation(withAuthRetry, id);
+        }}
       />
 
       <main className="main-area">
@@ -126,6 +171,24 @@ export function ChatPage() {
               <span className="current-model-name">{selectedModel?.name || "选择模型"}</span>
               <span>⌄</span>
             </button>
+            {isKimiModel ? (
+              <div className="thinking-switch" role="group" aria-label="思考模式">
+                <button
+                  type="button"
+                  className={chat.thinkingMode === "standard" ? "thinking-btn active" : "thinking-btn"}
+                  onClick={() => chat.setThinkingMode("standard")}
+                >
+                  标准
+                </button>
+                <button
+                  type="button"
+                  className={chat.thinkingMode === "thinking" ? "thinking-btn active" : "thinking-btn"}
+                  onClick={() => chat.setThinkingMode("thinking")}
+                >
+                  思考
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className="topbar-right">
             {bundle?.user.role === "admin" ? (
@@ -155,7 +218,7 @@ export function ChatPage() {
         </div>
 
         <div className="chat-container" id="chatContainer">
-          <div className="chat-messages" id="chatMessages">
+          <div className="chat-messages" id="chatMessages" ref={messagesContainerRef}>
             {!hasMessages && !chat.draftAssistant ? (
               <WelcomeScreen
                 models={chat.models}
@@ -176,7 +239,13 @@ export function ChatPage() {
                 ) : null}
 
                 {chat.messages.map((message) => (
-                  <ChatMessage key={message.id} message={message} modelName={selectedModel?.name} />
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    modelName={selectedModel?.name}
+                    canRegenerate={message.id === latestAssistantId}
+                    onRegenerate={() => void chat.regenerateLastAssistant(withAuthRetry)}
+                  />
                 ))}
 
                 {chat.draftAssistant ? (
@@ -187,10 +256,16 @@ export function ChatPage() {
                         <span className="message-sender">{selectedModel?.name || "AI"}</span>
                         <span className="message-time">生成中</span>
                       </div>
-                      <div className="message-body markdown-body draft-body">{chat.draftAssistant}</div>
+                      <div className="message-body markdown-body draft-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                          {chat.draftAssistant}
+                        </ReactMarkdown>
+                      </div>
                     </div>
                   </div>
                 ) : null}
+
+                <div ref={bottomRef} />
               </>
             )}
           </div>

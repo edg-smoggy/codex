@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -46,3 +46,24 @@ async def list_messages(
         .order_by(Message.created_at.asc())
     )
     return [MessageResponse.model_validate(item) for item in rows.all()]
+
+
+@router.delete("/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    user=Depends(require_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    conversation = await db.scalar(
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user.id,
+        )
+    )
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
+    await db.commit()
+    return {"status": "ok"}

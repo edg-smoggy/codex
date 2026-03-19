@@ -9,6 +9,7 @@ interface ChatSidebarProps {
   activeConversationId?: string;
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
 }
 
 function resolveModel(modelId: string): UIModel {
@@ -27,6 +28,7 @@ export function ChatSidebar({
   activeConversationId,
   onNewChat,
   onSelectConversation,
+  onDeleteConversation,
 }: ChatSidebarProps) {
   return (
     <aside className="sidebar">
@@ -49,11 +51,18 @@ export function ChatSidebar({
           conversations.map((conversation) => {
             const model = resolveModel(conversation.model);
             return (
-              <button
+              <div
                 key={conversation.id}
-                type="button"
                 className={conversation.id === activeConversationId ? "chat-item active" : "chat-item"}
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelectConversation(conversation.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectConversation(conversation.id);
+                  }
+                }}
               >
                 <div className={`chat-item-icon ${model.bgClass}`}>{model.icon}</div>
                 <div className="chat-item-info">
@@ -62,7 +71,19 @@ export function ChatSidebar({
                     {model.name} · {formatRelativeDateTime(conversation.updated_at)}
                   </div>
                 </div>
-              </button>
+                <button
+                  className="chat-item-delete"
+                  type="button"
+                  aria-label="删除会话"
+                  title="删除会话"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteConversation(conversation.id);
+                  }}
+                >
+                  🗑
+                </button>
+              </div>
             );
           })
         )}

@@ -4,7 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import httpx
 
@@ -12,6 +12,34 @@ from app.core.config import get_settings
 from app.services.quota import estimate_tokens
 
 settings = get_settings()
+_CLIENT_LIMITS = httpx.Limits(max_connections=80, max_keepalive_connections=20, keepalive_expiry=60.0)
+_provider_clients: dict[str, httpx.AsyncClient] = {}
+
+
+def _build_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=settings.request_timeout_seconds,
+        limits=_CLIENT_LIMITS,
+    )
+
+
+def _get_provider_client(provider: str) -> httpx.AsyncClient:
+    client = _provider_clients.get(provider)
+    if client is None:
+        client = _build_client()
+        _provider_clients[provider] = client
+    return client
+
+
+async def init_provider_clients() -> None:
+    for provider in ("openai", "gemini", "kimi"):
+        _get_provider_client(provider)
+
+
+async def close_provider_clients() -> None:
+    for client in _provider_clients.values():
+        await client.aclose()
+    _provider_clients.clear()
 
 
 @dataclass
@@ -120,6 +148,17 @@ def _to_text(value: Any) -> str:
     return ""
 
 
+def _kimi_thinking_overrides(thinking_mode: str) -> list[Optional[dict[str, Any]]]:
+    if thinking_mode != "thinking":
+        return [None]
+    return [
+        {"thinking": {"enabled": True}},
+        {"thinking": {"type": "enabled"}},
+        {"thinking": {"mode": "enabled"}},
+        {"thinking": True},
+    ]
+
+
 def _openai_stream_delta(payload: dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -205,6 +244,7 @@ async def _call_openai_style(
     model: str,
     messages: list[dict[str, str]],
     provider: str,
+    thinking_mode: str = "standard",
 ) -> ProviderResult:
     url = f"{base_url.rstrip('/')}/chat/completions"
     temperature = 0.7
@@ -212,7 +252,7 @@ async def _call_openai_style(
     if provider == "kimi" and model.lower().startswith("kimi-k2.5"):
         temperature = 1
 
-    body = {
+    base_body = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
@@ -222,10 +262,35 @@ async def _call_openai_style(
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+    client = _get_provider_client(provider)
+    last_error: Optional[httpx.HTTPStatusError] = None
+    for idx, override in enumerate(_kimi_thinking_overrides(thinking_mode) if provider == "kimi" else [None]):
+        body = dict(base_body)
+        if override:
+            body.update(override)
         resp = await client.post(url, headers=headers, json=body)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            status_error = httpx.HTTPStatusError(
+                message=f"Provider returned status {resp.status_code}",
+                request=resp.request,
+                response=resp,
+            )
+            can_retry = (
+                provider == "kimi"
+                and thinking_mode == "thinking"
+                and idx < len(_kimi_thinking_overrides(thinking_mode)) - 1
+                and resp.status_code in {400, 422}
+            )
+            if can_retry:
+                last_error = status_error
+                continue
+            raise status_error
         data = resp.json()
+        break
+    else:
+        if last_error:
+            raise last_error
+        raise RuntimeError("Provider request failed")
 
     message = (
         data.get("choices", [{}])[0]
@@ -256,6 +321,7 @@ async def _call_openai_style_stream(
     model: str,
     messages: list[dict[str, str]],
     provider: str,
+    thinking_mode: str = "standard",
 ) -> AsyncIterator[Union[str, ProviderResult]]:
     url = f"{base_url.rstrip('/')}/chat/completions"
     temperature = 0.7
@@ -263,7 +329,7 @@ async def _call_openai_style_stream(
     if provider == "kimi" and model.lower().startswith("kimi-k2.5"):
         temperature = 1
 
-    body: dict[str, Any] = {
+    base_body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
@@ -271,7 +337,7 @@ async def _call_openai_style_stream(
     }
     # OpenAI can emit usage in stream end chunks.
     if provider == "openai":
-        body["stream_options"] = {"include_usage": True}
+        base_body["stream_options"] = {"include_usage": True}
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -281,9 +347,33 @@ async def _call_openai_style_stream(
 
     content_parts: list[str] = []
     usage_data: dict[str, Any] = {}
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+    client = _get_provider_client(provider)
+    thinking_overrides = _kimi_thinking_overrides(thinking_mode) if provider == "kimi" else [None]
+    last_error: Optional[httpx.HTTPStatusError] = None
+    for idx, override in enumerate(thinking_overrides):
+        body = dict(base_body)
+        if override:
+            body.update(override)
+
         async with client.stream("POST", url, headers=headers, json=body) as resp:
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                await resp.aread()
+                status_error = httpx.HTTPStatusError(
+                    message=f"Provider returned status {resp.status_code}",
+                    request=resp.request,
+                    response=resp,
+                )
+                can_retry = (
+                    provider == "kimi"
+                    and thinking_mode == "thinking"
+                    and idx < len(thinking_overrides) - 1
+                    and resp.status_code in {400, 422}
+                )
+                if can_retry:
+                    last_error = status_error
+                    continue
+                raise status_error
+
             async for line in resp.aiter_lines():
                 if not line:
                     continue
@@ -311,6 +401,15 @@ async def _call_openai_style_stream(
                 if delta:
                     content_parts.append(delta)
                     yield delta
+            break
+    else:
+        if last_error:
+            raise last_error
+        raise RuntimeError("Provider request failed")
+
+    if not content_parts and not usage_data and provider == "kimi" and thinking_mode == "thinking":
+        # Defensive check for empty retry output.
+        raise RuntimeError("Kimi thinking mode returned empty stream")
 
     full_content = "".join(content_parts)
     input_tokens = int(usage_data.get("prompt_tokens") or estimate_tokens(str(messages)))
@@ -343,10 +442,10 @@ async def _call_gemini(
 
     body = {"contents": contents}
 
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-        resp = await client.post(url, params=params, json=body)
-        resp.raise_for_status()
-        data = resp.json()
+    client = _get_provider_client("gemini")
+    resp = await client.post(url, params=params, json=body)
+    resp.raise_for_status()
+    data = resp.json()
 
     parts = (
         data.get("candidates", [{}])[0]
@@ -391,34 +490,34 @@ async def _call_gemini_stream(
 
     content_parts: list[str] = []
     usage_meta: dict[str, Any] = {}
-    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-        async with client.stream("POST", url, params=params, headers=headers, json=body) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data_raw = line[len("data:") :].strip()
-                if not data_raw:
-                    continue
+    client = _get_provider_client("gemini")
+    async with client.stream("POST", url, params=params, headers=headers, json=body) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            if not line.startswith("data:"):
+                continue
+            data_raw = line[len("data:") :].strip()
+            if not data_raw:
+                continue
 
-                try:
-                    payload = json.loads(data_raw)
-                except json.JSONDecodeError:
-                    continue
+            try:
+                payload = json.loads(data_raw)
+            except json.JSONDecodeError:
+                continue
 
-                if not isinstance(payload, dict):
-                    continue
+            if not isinstance(payload, dict):
+                continue
 
-                usage_candidate = payload.get("usageMetadata")
-                if isinstance(usage_candidate, dict):
-                    usage_meta = usage_candidate
+            usage_candidate = payload.get("usageMetadata")
+            if isinstance(usage_candidate, dict):
+                usage_meta = usage_candidate
 
-                delta = _gemini_stream_delta(payload)
-                if delta:
-                    content_parts.append(delta)
-                    yield delta
+            delta = _gemini_stream_delta(payload)
+            if delta:
+                content_parts.append(delta)
+                yield delta
 
     full_content = "".join(content_parts)
     input_tokens = int(usage_meta.get("promptTokenCount") or estimate_tokens(str(messages)))
@@ -438,6 +537,7 @@ async def _call_gemini_stream(
 async def generate_reply_stream(
     model: str,
     messages: list[dict[str, str]],
+    thinking_mode: str = "standard",
 ) -> AsyncIterator[Union[str, ProviderResult]]:
     provider = provider_for_model(model)
     latest_user_text = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
@@ -455,6 +555,7 @@ async def generate_reply_stream(
             model=model,
             messages=messages,
             provider="openai",
+            thinking_mode=thinking_mode,
         ):
             yield chunk
         return
@@ -472,6 +573,7 @@ async def generate_reply_stream(
             model=model,
             messages=messages,
             provider="kimi",
+            thinking_mode=thinking_mode,
         ):
             yield chunk
         return
@@ -505,6 +607,7 @@ async def generate_reply(model: str, messages: list[dict[str, str]]) -> Provider
             model=model,
             messages=messages,
             provider="openai",
+            thinking_mode="standard",
         )
 
     if provider == "kimi":
@@ -518,6 +621,7 @@ async def generate_reply(model: str, messages: list[dict[str, str]]) -> Provider
             model=model,
             messages=messages,
             provider="kimi",
+            thinking_mode="standard",
         )
 
     if provider == "gemini":
