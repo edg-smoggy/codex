@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any, Optional
@@ -13,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models import Conversation, Message, MessageRole, utcnow
-from app.providers.router import generate_reply, list_supported_models
+from app.providers.router import ProviderResult, generate_reply_stream, list_supported_models
 from app.schemas import ChatStreamRequest
 from app.services.audit import log_action
 from app.services.auth import require_active_user
@@ -24,10 +23,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _split_chunks(text: str, chunk_size: int = 32) -> list[str]:
-    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)] or [""]
 
 
 @router.post("/stream")
@@ -92,93 +87,113 @@ async def stream_chat(
         if row.role in {MessageRole.USER, MessageRole.ASSISTANT, MessageRole.SYSTEM}
     ]
 
-    try:
-        result = await generate_reply(payload.model, messages)
-    except httpx.HTTPStatusError as exc:
-        await log_action(
-            db,
-            user_id=user.id,
-            action="chat.provider_error",
-            detail={
-                "model": payload.model,
-                "status_code": exc.response.status_code,
-                "body": exc.response.text[:300],
-            },
-        )
-        await db.commit()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Provider request failed") from exc
-    except Exception as exc:
-        await log_action(
-            db,
-            user_id=user.id,
-            action="chat.runtime_error",
-            detail={"model": payload.model, "error": str(exc)[:300]},
-        )
-        await db.commit()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Chat failed") from exc
-
-    assistant_msg = Message(
-        conversation_id=conversation.id,
-        role=MessageRole.ASSISTANT,
-        content=result.content,
-        model=result.model,
-        provider=result.provider,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-        cost=result.cost,
-    )
-    db.add(assistant_msg)
-
-    usage = await apply_usage(
-        db,
-        user_id=user.id,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-        total_cost=result.cost,
-    )
-
-    await log_action(
-        db,
-        user_id=user.id,
-        action="chat.completed",
-        detail={
-            "conversation_id": conversation.id,
-            "model": result.model,
-            "provider": result.provider,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-            "cost": result.cost,
-        },
-    )
-
     await db.commit()
-    await db.refresh(assistant_msg)
 
     async def event_gen() -> AsyncIterator[str]:
+        full_content = ""
+        final_result: Optional[ProviderResult] = None
+        provider = enabled_models[payload.model]["provider"]
+
         yield _sse(
             "meta",
             {
                 "conversation_id": conversation.id,
-                "assistant_message_id": assistant_msg.id,
-                "model": result.model,
-                "provider": result.provider,
+                "assistant_message_id": "",
+                "model": payload.model,
+                "provider": provider,
             },
         )
-        for chunk in _split_chunks(result.content, 36):
-            yield _sse("chunk", {"delta": chunk})
-            await asyncio.sleep(0.01)
-        yield _sse(
-            "done",
-            {
-                "usage": {
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "cost": result.cost,
-                    "daily_total_tokens": usage.input_tokens + usage.output_tokens,
-                    "daily_total_cost": usage.total_cost,
-                }
-            },
-        )
+
+        try:
+            async for chunk in generate_reply_stream(payload.model, messages):
+                if isinstance(chunk, str):
+                    if not chunk:
+                        continue
+                    full_content += chunk
+                    yield _sse("chunk", {"delta": chunk})
+                    continue
+                final_result = chunk
+
+            if not final_result:
+                raise RuntimeError("Provider stream ended without final result")
+
+            assistant_content = full_content or final_result.content
+            assistant_msg = Message(
+                conversation_id=conversation.id,
+                role=MessageRole.ASSISTANT,
+                content=assistant_content,
+                model=final_result.model,
+                provider=final_result.provider,
+                input_tokens=final_result.input_tokens,
+                output_tokens=final_result.output_tokens,
+                cost=final_result.cost,
+            )
+            db.add(assistant_msg)
+
+            usage = await apply_usage(
+                db,
+                user_id=user.id,
+                input_tokens=final_result.input_tokens,
+                output_tokens=final_result.output_tokens,
+                total_cost=final_result.cost,
+            )
+
+            await log_action(
+                db,
+                user_id=user.id,
+                action="chat.completed",
+                detail={
+                    "conversation_id": conversation.id,
+                    "model": final_result.model,
+                    "provider": final_result.provider,
+                    "input_tokens": final_result.input_tokens,
+                    "output_tokens": final_result.output_tokens,
+                    "cost": final_result.cost,
+                },
+            )
+            await db.commit()
+            await db.refresh(assistant_msg)
+
+            yield _sse(
+                "done",
+                {
+                    "usage": {
+                        "input_tokens": final_result.input_tokens,
+                        "output_tokens": final_result.output_tokens,
+                        "cost": final_result.cost,
+                        "daily_total_tokens": usage.input_tokens + usage.output_tokens,
+                        "daily_total_cost": usage.total_cost,
+                    },
+                    "assistant_message_id": assistant_msg.id,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            await log_action(
+                db,
+                user_id=user.id,
+                action="chat.provider_error",
+                detail={
+                    "conversation_id": conversation.id,
+                    "model": payload.model,
+                    "status_code": exc.response.status_code,
+                    "body": exc.response.text[:300],
+                },
+            )
+            await db.commit()
+            yield _sse("error", {"detail": "Provider request failed"})
+        except Exception as exc:
+            await log_action(
+                db,
+                user_id=user.id,
+                action="chat.runtime_error",
+                detail={
+                    "conversation_id": conversation.id,
+                    "model": payload.model,
+                    "error": str(exc)[:300],
+                },
+            )
+            await db.commit()
+            yield _sse("error", {"detail": "Chat failed"})
 
     headers = {
         "Cache-Control": "no-cache",

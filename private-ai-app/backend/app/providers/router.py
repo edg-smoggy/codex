@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Union
 
 import httpx
 
@@ -100,6 +103,60 @@ def list_supported_models() -> list[dict[str, Any]]:
     ]
 
 
+def _to_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _openai_stream_delta(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    delta = first.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    return _to_text(delta.get("content"))
+
+
+def _gemini_stream_delta(payload: dict[str, Any]) -> str:
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return ""
+
+    texts: list[str] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                texts.append(text)
+    return "".join(texts)
+
+
 async def _mock_reply(model: str, message: str) -> ProviderResult:
     content = f"[MOCK:{model}] {message[:200]}"
     input_tokens = estimate_tokens(message)
@@ -113,6 +170,31 @@ async def _mock_reply(model: str, message: str) -> ProviderResult:
         output_tokens=output_tokens,
         cost=_estimate_cost(provider, model, input_tokens, output_tokens),
         raw={"mock": True},
+    )
+
+
+async def _mock_reply_stream(
+    model: str,
+    message: str,
+) -> AsyncIterator[Union[str, ProviderResult]]:
+    content = f"[MOCK:{model}] {message[:200]}"
+    provider = provider_for_model(model)
+    for idx in range(0, len(content), 5):
+        delta = content[idx : idx + 5]
+        if delta:
+            yield delta
+            await asyncio.sleep(0.03)
+
+    input_tokens = estimate_tokens(message)
+    output_tokens = estimate_tokens(content)
+    yield ProviderResult(
+        provider=provider,
+        model=model,
+        content=content,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=_estimate_cost(provider, model, input_tokens, output_tokens),
+        raw={"mock": True, "stream": True},
     )
 
 
@@ -167,6 +249,84 @@ async def _call_openai_style(
     )
 
 
+async def _call_openai_style_stream(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict[str, str]],
+    provider: str,
+) -> AsyncIterator[Union[str, ProviderResult]]:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    temperature = 0.7
+    # Moonshot kimi-k2.5 only accepts temperature=1 in OpenAI-compatible mode.
+    if provider == "kimi" and model.lower().startswith("kimi-k2.5"):
+        temperature = 1
+
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    # OpenAI can emit usage in stream end chunks.
+    if provider == "openai":
+        body["stream_options"] = {"include_usage": True}
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    content_parts: list[str] = []
+    usage_data: dict[str, Any] = {}
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        async with client.stream("POST", url, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data_raw = line[len("data:") :].strip()
+                if not data_raw:
+                    continue
+                if data_raw == "[DONE]":
+                    break
+
+                try:
+                    payload = json.loads(data_raw)
+                except json.JSONDecodeError:
+                    continue
+
+                if not isinstance(payload, dict):
+                    continue
+
+                usage_candidate = payload.get("usage")
+                if isinstance(usage_candidate, dict):
+                    usage_data = usage_candidate
+
+                delta = _openai_stream_delta(payload)
+                if delta:
+                    content_parts.append(delta)
+                    yield delta
+
+    full_content = "".join(content_parts)
+    input_tokens = int(usage_data.get("prompt_tokens") or estimate_tokens(str(messages)))
+    output_tokens = int(usage_data.get("completion_tokens") or estimate_tokens(full_content))
+
+    yield ProviderResult(
+        provider=provider,
+        model=model,
+        content=full_content,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=_estimate_cost(provider, model, input_tokens, output_tokens),
+        raw={"stream": True, "usage": usage_data},
+    )
+
+
 async def _call_gemini(
     *,
     model: str,
@@ -207,6 +367,127 @@ async def _call_gemini(
         cost=_estimate_cost("gemini", model, input_tokens, output_tokens),
         raw=data,
     )
+
+
+async def _call_gemini_stream(
+    *,
+    model: str,
+    api_key: str,
+    messages: list[dict[str, str]],
+) -> AsyncIterator[Union[str, ProviderResult]]:
+    url = f"{settings.gemini_base_url.rstrip('/')}/models/{model}:streamGenerateContent"
+    params = {"key": api_key, "alt": "sse"}
+
+    contents = []
+    for m in messages:
+        role = "model" if m["role"] == "assistant" else "user"
+        contents.append({"role": role, "parts": [{"text": m["content"]}]})
+    body = {"contents": contents}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+    content_parts: list[str] = []
+    usage_meta: dict[str, Any] = {}
+    async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+        async with client.stream("POST", url, params=params, headers=headers, json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data_raw = line[len("data:") :].strip()
+                if not data_raw:
+                    continue
+
+                try:
+                    payload = json.loads(data_raw)
+                except json.JSONDecodeError:
+                    continue
+
+                if not isinstance(payload, dict):
+                    continue
+
+                usage_candidate = payload.get("usageMetadata")
+                if isinstance(usage_candidate, dict):
+                    usage_meta = usage_candidate
+
+                delta = _gemini_stream_delta(payload)
+                if delta:
+                    content_parts.append(delta)
+                    yield delta
+
+    full_content = "".join(content_parts)
+    input_tokens = int(usage_meta.get("promptTokenCount") or estimate_tokens(str(messages)))
+    output_tokens = int(usage_meta.get("candidatesTokenCount") or estimate_tokens(full_content))
+
+    yield ProviderResult(
+        provider="gemini",
+        model=model,
+        content=full_content,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost=_estimate_cost("gemini", model, input_tokens, output_tokens),
+        raw={"stream": True, "usage_metadata": usage_meta},
+    )
+
+
+async def generate_reply_stream(
+    model: str,
+    messages: list[dict[str, str]],
+) -> AsyncIterator[Union[str, ProviderResult]]:
+    provider = provider_for_model(model)
+    latest_user_text = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+
+    if provider == "openai":
+        if not settings.openai_api_key:
+            if settings.allow_mock_provider:
+                async for chunk in _mock_reply_stream(model, latest_user_text):
+                    yield chunk
+                return
+            raise RuntimeError("OPENAI_API_KEY is missing")
+        async for chunk in _call_openai_style_stream(
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key,
+            model=model,
+            messages=messages,
+            provider="openai",
+        ):
+            yield chunk
+        return
+
+    if provider == "kimi":
+        if not settings.kimi_api_key:
+            if settings.allow_mock_provider:
+                async for chunk in _mock_reply_stream(model, latest_user_text):
+                    yield chunk
+                return
+            raise RuntimeError("KIMI_API_KEY is missing")
+        async for chunk in _call_openai_style_stream(
+            base_url=settings.kimi_base_url,
+            api_key=settings.kimi_api_key,
+            model=model,
+            messages=messages,
+            provider="kimi",
+        ):
+            yield chunk
+        return
+
+    if provider == "gemini":
+        if not settings.gemini_api_key:
+            if settings.allow_mock_provider:
+                async for chunk in _mock_reply_stream(model, latest_user_text):
+                    yield chunk
+                return
+            raise RuntimeError("GEMINI_API_KEY is missing")
+        async for chunk in _call_gemini_stream(model=model, api_key=settings.gemini_api_key, messages=messages):
+            yield chunk
+        return
+
+    raise RuntimeError("Provider not implemented")
 
 
 async def generate_reply(model: str, messages: list[dict[str, str]]) -> ProviderResult:
