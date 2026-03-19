@@ -44,9 +44,12 @@ export interface ChatService {
 }
 
 export interface AdminService {
-  getDashboardStats: () => Promise<DashboardStats>;
+  getDashboardStats: (accessToken: string) => Promise<DashboardStats>;
   getModelsConfig: (baseModels?: Array<{ model: string; provider: string; enabled: boolean }>) => Promise<ModelConfig[]>;
   getApiKeys: () => Promise<ApiKeyItem[]>;
-  getLogs: () => Promise<LogEntry[]>;
+  getLogs: (
+    accessToken: string,
+    params?: { action?: string; limit?: number; offset?: number },
+  ) => Promise<LogEntry[]>;
   getSettings: () => Promise<SystemSettings>;
 }

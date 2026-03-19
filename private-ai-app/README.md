@@ -18,7 +18,24 @@ private-ai-app/
   docker-compose.yml
 ```
 
-## 0) 推荐先跑（本地 fallback，无 Docker）
+## 0) Mac 一键图标启动（推荐）
+
+首次生成启动器：
+
+```bash
+cd /Users/bytedance/Documents/codex1/private-ai-app
+./scripts/build_mac_launcher.sh
+```
+
+后续直接双击项目根目录里的 `Private AI Hub.app` 即可启动（自动拉起/复用后端，并打开桌面端）。
+
+如需手动停止本地后端：
+
+```bash
+pkill -f "uvicorn app.main:app --host 0.0.0.0 --port 8000" || true
+```
+
+## 1) 推荐先跑（本地 fallback，无 Docker）
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app
@@ -30,7 +47,7 @@ cd /Users/bytedance/Documents/codex1/private-ai-app
 - 本路径使用 `backend/.env.local`（基于 SQLite + mock provider）快速完成 API 验收。
 - 适合当前机器缺少 Docker/Node 时先完成 Day1 验证。
 
-## 1) 后端启动（Docker 模式）
+## 2) 后端启动（Docker 模式）
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app
@@ -39,7 +56,7 @@ cp backend/.env.example backend/.env
 docker compose up -d --build postgres redis backend
 ```
 
-## 2) 后端启动（本地模式）
+## 3) 后端启动（本地模式）
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app
@@ -49,7 +66,7 @@ cd /Users/bytedance/Documents/codex1/private-ai-app
 默认后端地址：
 - `http://localhost:8000/api/v1`
 
-## 3) 初始化管理员与邀请码
+## 4) 初始化管理员与邀请码
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app/backend
@@ -60,7 +77,7 @@ PYTHONPATH=. python scripts/bootstrap_admin.py \
   --invite-code 'FRIEND-ONLY-001'
 ```
 
-## 4) 桌面端启动（开发）
+## 5) 桌面端启动（开发）
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app/desktop
@@ -70,7 +87,7 @@ export VITE_API_BASE_URL=http://localhost:8000/api/v1
 npm run tauri:dev
 ```
 
-## 5) Windows 打包
+## 6) Windows 打包
 
 ```bash
 cd /Users/bytedance/Documents/codex1/private-ai-app/desktop
@@ -81,7 +98,7 @@ npm run tauri:build
 产物通常在：
 - `desktop/src-tauri/target/release/bundle/`
 
-## 6) 已实现 API
+## 7) 已实现 API
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
@@ -99,7 +116,7 @@ npm run tauri:build
 - `POST /api/v1/admin/users/{id}/usage/reset`
 - `GET /api/v1/health`
 
-## 7) 环境变量说明
+## 8) 环境变量说明
 
 真实模型回归时，在 `backend/.env`（或 `.env.local`）配置：
 - `OPENAI_API_KEY`
@@ -113,14 +130,14 @@ mock 联调阶段可保留：
 真 key 回归阶段切换：
 - `ALLOW_MOCK_PROVIDER=false`
 
-## 8) 交付文档
+## 9) 交付文档
 
 - `docs/acceptance-checklist.md`
 - `docs/internal-beta-runbook.md`
 - `docs/smoke-log-template.md`
 - `docs/day1-execution-report-2026-03-14.md`
 
-## 9) 安全建议（上线前）
+## 10) 安全建议（上线前）
 
 - 关闭 CORS 全开放，仅允许必要来源。
 - 使用高强度 `SECRET_KEY` 并固定不随意变更。

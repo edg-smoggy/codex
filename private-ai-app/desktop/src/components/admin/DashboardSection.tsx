@@ -9,6 +9,45 @@ interface DashboardSectionProps {
   onGotoUsers: () => void;
 }
 
+const DONUT_COLORS = [
+  "var(--accent)",
+  "var(--green)",
+  "var(--orange)",
+  "var(--pink)",
+  "var(--blue)",
+  "#7f8fa6",
+  "#a29bfe",
+];
+
+function buildDonutGradient(stats: DashboardStats): { gradient: string; legend: Array<{ label: string; value: number; color: string }> } {
+  const total = stats.daily_usage_7d.reduce((sum, item) => sum + item.tokens, 0);
+  if (!total) {
+    return {
+      gradient: "conic-gradient(var(--bg-active) 0deg 360deg)",
+      legend: [],
+    };
+  }
+
+  const legend: Array<{ label: string; value: number; color: string }> = [];
+  let start = 0;
+  const pieces: string[] = [];
+
+  stats.daily_usage_7d.forEach((item, index) => {
+    const ratio = item.tokens / total;
+    const angle = ratio * 360;
+    const color = DONUT_COLORS[index % DONUT_COLORS.length];
+    const end = start + angle;
+    pieces.push(`${color} ${start}deg ${end}deg`);
+    legend.push({ label: item.date, value: item.tokens, color });
+    start = end;
+  });
+
+  return {
+    gradient: `conic-gradient(${pieces.join(", ")})`,
+    legend,
+  };
+}
+
 export function DashboardSection({ stats, users, usage, onGotoUsers }: DashboardSectionProps) {
   if (!stats) return null;
 
@@ -17,7 +56,9 @@ export function DashboardSection({ stats, users, usage, onGotoUsers }: Dashboard
     .sort((a, b) => b.total_tokens - a.total_tokens)
     .slice(0, 5);
 
-  const totalDistribution = stats.modelDistribution.reduce((sum, item) => sum + item.value, 0) || 1;
+  const maxTokens = Math.max(...stats.daily_usage_7d.map((item) => item.tokens), 1);
+  const donut = buildDonutGradient(stats);
+  const totalDistribution = donut.legend.reduce((sum, item) => sum + item.value, 0) || 1;
 
   return (
     <section className="page-section active">
@@ -27,21 +68,29 @@ export function DashboardSection({ stats, users, usage, onGotoUsers }: Dashboard
             <div className="stat-icon" style={{ background: "var(--accent-bg)", color: "var(--accent)" }}>
               👥
             </div>
-            <div className="stat-change stat-up">{stats.userDelta}</div>
           </div>
-          <div className="stat-value">{stats.totalUsers}</div>
+          <div className="stat-value">{stats.total_users.toLocaleString()}</div>
           <div className="stat-label">总用户数</div>
         </div>
 
         <div className="stat-card">
           <div className="stat-header">
             <div className="stat-icon" style={{ background: "var(--green-bg)", color: "var(--green)" }}>
+              🟢
+            </div>
+          </div>
+          <div className="stat-value">{stats.active_users_today.toLocaleString()}</div>
+          <div className="stat-label">今日活跃用户</div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-header">
+            <div className="stat-icon" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>
               💬
             </div>
-            <div className="stat-change stat-up">{stats.convDelta}</div>
           </div>
-          <div className="stat-value">{stats.todayConversations.toLocaleString()}</div>
-          <div className="stat-label">今日对话数</div>
+          <div className="stat-value">{stats.total_conversations.toLocaleString()}</div>
+          <div className="stat-label">总对话数</div>
         </div>
 
         <div className="stat-card">
@@ -49,63 +98,44 @@ export function DashboardSection({ stats, users, usage, onGotoUsers }: Dashboard
             <div className="stat-icon" style={{ background: "var(--orange-bg)", color: "var(--orange)" }}>
               ⚡
             </div>
-            <div className="stat-change stat-down">{stats.costDelta}</div>
           </div>
-          <div className="stat-value">{toCurrency(stats.todayCost)}</div>
+          <div className="stat-value">{toCurrency(stats.total_cost_today)}</div>
           <div className="stat-label">今日 API 花费</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-header">
-            <div className="stat-icon" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>
-              🤖
-            </div>
-            <div className="stat-change stat-up">{stats.modelDelta}</div>
-          </div>
-          <div className="stat-value">{stats.availableModels}</div>
-          <div className="stat-label">可用模型数</div>
         </div>
       </div>
 
       <div className="charts-row">
         <div className="chart-card">
           <div className="chart-title">
-            <span>API 调用趋势</span>
-            <div className="chart-period">
-              <button type="button" className="period-btn active">
-                7天
-              </button>
-              <button type="button" className="period-btn">
-                30天
-              </button>
-              <button type="button" className="period-btn">
-                90天
-              </button>
-            </div>
+            <span>最近 7 天 Token 趋势</span>
           </div>
           <div className="chart-bars">
-            {stats.trend.map((item) => (
-              <div className="chart-bar-group" key={item.label}>
-                <div className="chart-bar" style={{ height: `${(item.value / 100) * 160}px` }} />
-                <div className="chart-bar-label">{item.label}</div>
-              </div>
-            ))}
+            {stats.daily_usage_7d.map((item) => {
+              const barHeight = Math.max(8, Math.round((item.tokens / maxTokens) * 160));
+              const label = item.date.slice(5);
+              return (
+                <div className="chart-bar-group" key={item.date}>
+                  <div className="chart-bar" style={{ height: `${barHeight}px` }} />
+                  <div className="chart-bar-label">{label}</div>
+                </div>
+              );
+            })}
           </div>
         </div>
 
         <div className="chart-card">
           <div className="chart-title">
-            <span>模型用量分布</span>
+            <span>近 7 天 Token 占比</span>
           </div>
           <div className="donut-container">
-            <div className="donut-ring">
+            <div className="donut-ring" style={{ background: donut.gradient }}>
               <div className="donut-hole">
-                <div className="donut-total">{stats.todayConversations.toLocaleString()}</div>
-                <div className="donut-sublabel">总调用</div>
+                <div className="donut-total">{stats.total_tokens_today.toLocaleString()}</div>
+                <div className="donut-sublabel">今日 Tokens</div>
               </div>
             </div>
             <div className="donut-legend">
-              {stats.modelDistribution.map((item) => (
+              {donut.legend.map((item) => (
                 <div className="legend-item" key={item.label}>
                   <span className="legend-dot" style={{ background: item.color }} />
                   {item.label} · {Math.round((item.value / totalDistribution) * 100)}%

@@ -25,16 +25,14 @@ export interface ConversationVM {
 }
 
 export interface DashboardStats {
-  totalUsers: number;
-  todayConversations: number;
-  todayCost: number;
-  availableModels: number;
-  userDelta: string;
-  convDelta: string;
-  costDelta: string;
-  modelDelta: string;
-  trend: Array<{ label: string; value: number }>;
-  modelDistribution: Array<{ label: string; value: number; color: string }>;
+  total_users: number;
+  active_users_today: number;
+  total_conversations: number;
+  total_messages_today: number;
+  total_cost_today: number;
+  total_tokens_today: number;
+  models_enabled: number;
+  daily_usage_7d: Array<{ date: string; tokens: number; cost: number; requests: number }>;
 }
 
 export interface ModelConfig {
@@ -59,11 +57,11 @@ export interface ApiKeyItem {
 
 export interface LogEntry {
   id: string;
-  type: "api" | "user" | "system" | "error";
-  text: string;
-  meta: string;
-  time: string;
-  color: string;
+  user_id: string | null;
+  username: string | null;
+  action: string;
+  detail: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface SystemSettings {

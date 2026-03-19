@@ -31,9 +31,10 @@ if [[ "${OPENAI_API_KEY}" == "sk-你的key" || "${OPENAI_API_KEY}" == "sk-placeh
   exit 1
 fi
 
-# 懒人模式：固定使用 Kimi 官方 OpenAI 兼容端点和模型，避免被旧环境变量覆盖
+# 懒人模式：固定使用 Moonshot 官方 OpenAI 兼容端点和低延迟模型
 export OPENAI_BASE_URL="https://api.moonshot.cn/v1"
-export OPENAI_MODEL="kimi-k2.5"
+export OPENAI_MODEL="moonshot-v1-auto"
+export OPENAI_GENERATOR_MODEL="moonshot-v1-auto"
 export GRADIO_SERVER_NAME="${GRADIO_SERVER_NAME:-127.0.0.1}"
 export GRADIO_SERVER_PORT="${GRADIO_SERVER_PORT:-7860}"
 export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost}"
@@ -41,6 +42,14 @@ export no_proxy="${no_proxy:-127.0.0.1,localhost}"
 
 echo "Using OPENAI_BASE_URL=${OPENAI_BASE_URL}"
 echo "Using OPENAI_MODEL=${OPENAI_MODEL}"
+echo "Using OPENAI_GENERATOR_MODEL=${OPENAI_GENERATOR_MODEL}"
+
+if lsof -nP -iTCP:"${GRADIO_SERVER_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "端口 ${GRADIO_SERVER_PORT} 已被占用。"
+  echo "请先关闭占用进程，或先执行：export GRADIO_SERVER_PORT=7861"
+  read -r -p "按回车键退出..."
+  exit 1
+fi
 
 python3 app.py &
 APP_PID=$!

@@ -12,6 +12,8 @@ import os
 LLM_API_KEY: str = os.environ.get("OPENAI_API_KEY", "sk-placeholder")
 LLM_BASE_URL: str = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+# 回复生成层可单独指定模型；未设置时回退到 OPENAI_MODEL
+GENERATOR_MODEL: str = os.environ.get("OPENAI_GENERATOR_MODEL", LLM_MODEL)
 
 # 情绪分析层使用的 temperature（越低越稳定）
 ANALYZER_TEMPERATURE: float = 0.1
@@ -19,7 +21,11 @@ ANALYZER_TEMPERATURE: float = 0.1
 GENERATOR_TEMPERATURE: float = 0.7
 # LLM 最大 token 数
 ANALYZER_MAX_TOKENS: int = 512
-GENERATOR_MAX_TOKENS: int = 1024
+GENERATOR_MAX_TOKENS: int = 320
+# 回复生成层调用超时时间（秒）
+GENERATOR_TIMEOUT_SECONDS: int = int(os.environ.get("GENERATOR_TIMEOUT_SECONDS", "20"))
+# 回复生成层重试次数（不含首次调用）
+GENERATOR_RETRY_MAX: int = int(os.environ.get("GENERATOR_RETRY_MAX", "1"))
 
 
 # ─────────────────────────────────────────────
@@ -47,7 +53,7 @@ ESCALATION_URGE_ROUND: int = 5
 MAX_EMOTION_HISTORY: int = 20
 # 构造 LLM 上下文时使用的最近对话轮次数
 CONTEXT_WINDOW_ANALYSIS: int = 3   # 用于情绪分析
-CONTEXT_WINDOW_RESPONSE: int = 10  # 用于回复生成
+CONTEXT_WINDOW_RESPONSE: int = 4  # 用于回复生成
 
 
 # ─────────────────────────────────────────────

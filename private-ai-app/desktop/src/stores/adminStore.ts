@@ -15,6 +15,7 @@ import {
 import { getModels } from "../api/chat";
 
 export type AdminSection = "dashboard" | "users" | "models" | "keys" | "logs" | "settings";
+type LogFilter = "all" | "chat" | "auth" | "admin" | "error";
 
 interface AdminStore {
   section: AdminSection;
@@ -26,12 +27,12 @@ interface AdminStore {
   apiKeys: ApiKeyItem[];
   logs: LogEntry[];
   settings?: SystemSettings;
-  logFilter: "all" | "api" | "user" | "system" | "error";
+  logFilter: LogFilter;
   loading: boolean;
   error: string;
 
   setSection: (section: AdminSection) => void;
-  setLogFilter: (filter: AdminStore["logFilter"]) => void;
+  setLogFilter: (filter: LogFilter) => void;
   clearError: () => void;
   hydrate: (runner: <T>(fn: (token: string) => Promise<T>) => Promise<T>) => Promise<void>;
   toggleUserBlock: (
@@ -67,9 +68,9 @@ export const useAdminStore = create<AdminStore>((set, get) => ({
         runner((token) => adminListUsers(token)),
         runner((token) => adminDailyUsage(token)),
         runner((token) => getModels(token)),
-        getDashboardStats(),
+        runner((token) => getDashboardStats(token)),
         getApiKeys(),
-        getLogs(),
+        runner((token) => getLogs(token)),
         getSettings(),
       ]);
 

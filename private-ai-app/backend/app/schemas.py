@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -102,6 +102,24 @@ class AdminUsageItem(BaseModel):
     total_cost: float
 
 
+class DailyUsage7d(BaseModel):
+    date: date
+    tokens: int
+    cost: float
+    requests: int
+
+
+class DashboardResponse(BaseModel):
+    total_users: int
+    active_users_today: int
+    total_conversations: int
+    total_messages_today: int
+    total_cost_today: float
+    total_tokens_today: int
+    models_enabled: int
+    daily_usage_7d: list[DailyUsage7d]
+
+
 class AdminUserItem(BaseModel):
     id: str
     username: str
@@ -119,6 +137,15 @@ class UserBlockRequest(BaseModel):
 class UserQuotaUpdateRequest(BaseModel):
     daily_token_limit: int = Field(gt=0)
     daily_cost_limit: float = Field(gt=0)
+
+
+class AuditLogItem(BaseModel):
+    id: str
+    user_id: Optional[str]
+    username: Optional[str]
+    action: str
+    detail: dict[str, Any]
+    created_at: datetime
 
 
 class HealthResponse(BaseModel):

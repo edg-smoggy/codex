@@ -3,19 +3,17 @@ import type { AdminService } from "../types/services";
 import type { ApiKeyItem, DashboardStats, LogEntry, ModelConfig, SystemSettings } from "../types/view";
 import {
   MOCK_API_KEYS,
-  MOCK_DASHBOARD,
-  MOCK_LOGS,
   MOCK_MODEL_CONFIGS,
   MOCK_SETTINGS,
 } from "../mocks/adminMock";
 import { API_BASE, DATA_SOURCE_MODE, parseResponse } from "./http";
 
-type MockDomain = "dashboard" | "keys" | "logs" | "settings" | "model-manager";
+type MockDomain = "keys" | "settings" | "model-manager";
 
 function shouldUseMock(domain: MockDomain): boolean {
   if (DATA_SOURCE_MODE === "mock") return true;
   if (DATA_SOURCE_MODE === "real") return false;
-  return domain === "dashboard" || domain === "keys" || domain === "logs" || domain === "settings" || domain === "model-manager";
+  return domain === "keys" || domain === "settings" || domain === "model-manager";
 }
 
 function assertRealEndpoint(domain: MockDomain): void {
@@ -54,9 +52,11 @@ export async function adminBlockUser(
   return parseResponse<{ status: string }>(resp);
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
-  assertRealEndpoint("dashboard");
-  return structuredClone(MOCK_DASHBOARD);
+export async function getDashboardStats(accessToken: string): Promise<DashboardStats> {
+  const resp = await fetch(`${API_BASE}/admin/dashboard`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  return parseResponse<DashboardStats>(resp);
 }
 
 export async function getModelsConfig(baseModels?: ModelInfo[]): Promise<ModelConfig[]> {
@@ -94,9 +94,23 @@ export async function getApiKeys(): Promise<ApiKeyItem[]> {
   return structuredClone(MOCK_API_KEYS);
 }
 
-export async function getLogs(): Promise<LogEntry[]> {
-  assertRealEndpoint("logs");
-  return structuredClone(MOCK_LOGS);
+interface GetLogsParams {
+  action?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getLogs(accessToken: string, params: GetLogsParams = {}): Promise<LogEntry[]> {
+  const query = new URLSearchParams();
+  if (params.action) query.set("action", params.action);
+  query.set("limit", String(params.limit ?? 50));
+  query.set("offset", String(params.offset ?? 0));
+  const suffix = query.toString();
+
+  const resp = await fetch(`${API_BASE}/admin/logs${suffix ? `?${suffix}` : ""}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  return parseResponse<LogEntry[]>(resp);
 }
 
 export async function getSettings(): Promise<SystemSettings> {
