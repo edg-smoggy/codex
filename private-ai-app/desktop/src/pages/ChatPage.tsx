@@ -9,6 +9,7 @@ import { ChatInput } from "../components/chat/ChatInput";
 import { ChatMessage } from "../components/chat/ChatMessage";
 import { ChatSidebar } from "../components/chat/ChatSidebar";
 import { ModelSelectorModal } from "../components/chat/ModelSelectorModal";
+import { ThinkingToggle } from "../components/chat/ThinkingToggle";
 import { WelcomeScreen } from "../components/chat/WelcomeScreen";
 import { useAuthStore } from "../stores/authStore";
 import { useChatStore } from "../stores/chatStore";
@@ -158,51 +159,39 @@ export function ChatPage() {
           }
           void chat.deleteConversation(withAuthRetry, id);
         }}
+        onOpenSettings={() => {
+          if (bundle?.user.role === "admin") {
+            navigate("/admin");
+            return;
+          }
+          window.alert("设置页开发中，管理员可进入后台查看设置。");
+        }}
       />
 
       <main className="main-area">
         <div className="topbar">
           <div className="topbar-left">
-            <button className="topbar-btn mobile-only" type="button" onClick={ui.toggleChatSidebar} aria-label="切换侧栏">
+            <button className="topbar-btn" type="button" onClick={ui.toggleChatSidebar} aria-label="切换侧栏">
               ☰
             </button>
-            <button className="current-model-badge" type="button" onClick={ui.openModelModal} aria-label="选择模型">
-              <span className="model-dot" style={{ background: selectedModel?.color || "var(--accent)" }} />
-              <span className="current-model-name">{selectedModel?.name || "选择模型"}</span>
-              <span>⌄</span>
-            </button>
+            <div className="topbar-title-wrap">
+              <div className="topbar-title-main">{activeConversation?.title || "新对话"}</div>
+              <div className="topbar-title-sub">{selectedModel?.name || "未选择模型"}</div>
+            </div>
             {isKimiModel ? (
-              <div className="thinking-switch" role="group" aria-label="思考模式">
-                <button
-                  type="button"
-                  className={chat.thinkingMode === "standard" ? "thinking-btn active" : "thinking-btn"}
-                  onClick={() => chat.setThinkingMode("standard")}
-                >
-                  标准
-                </button>
-                <button
-                  type="button"
-                  className={chat.thinkingMode === "thinking" ? "thinking-btn active" : "thinking-btn"}
-                  onClick={() => chat.setThinkingMode("thinking")}
-                >
-                  思考
-                </button>
-              </div>
+              <ThinkingToggle value={chat.thinkingMode} onChange={chat.setThinkingMode} disabled={chat.streaming} />
             ) : null}
           </div>
           <div className="topbar-right">
+            <div className="status-pill">
+              <span className={chat.health?.api === "ok" ? "status-dot status-ok" : "status-dot status-warn"} />
+              {chat.health?.api === "ok" ? "在线" : "检查中"}
+            </div>
             {bundle?.user.role === "admin" ? (
               <Link to="/admin" className="topbar-pill" aria-label="进入管理后台">
                 管理后台
               </Link>
             ) : null}
-            <div className="status-pill">
-              <span className={chat.health?.api === "ok" ? "status-dot status-ok" : "status-dot status-warn"} />
-              {chat.health?.api === "ok" ? "在线" : "检查中"}
-            </div>
-            <button className="topbar-btn" type="button" onClick={() => void chat.hydrateBase(withAuthRetry)} aria-label="刷新">
-              ↻
-            </button>
             <button
               className="topbar-btn"
               type="button"
@@ -275,12 +264,15 @@ export function ChatPage() {
 
         <ChatInput
           value={chat.input}
+          modelName={selectedModel?.name || "选择模型"}
+          modelColor={selectedModel?.color || "var(--accent)"}
           disabled={!canSend}
           streaming={chat.streaming}
           onChange={(value) => {
             chat.clearError();
             chat.setInput(value);
           }}
+          onOpenModelModal={ui.openModelModal}
           onSend={() => void chat.sendMessage(withAuthRetry)}
           onStop={chat.stopStreaming}
         />

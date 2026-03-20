@@ -2,14 +2,27 @@ import { useEffect, useRef } from "react";
 
 interface ChatInputProps {
   value: string;
+  modelName: string;
+  modelColor?: string;
   disabled?: boolean;
   streaming?: boolean;
   onChange: (value: string) => void;
+  onOpenModelModal: () => void;
   onSend: () => void;
   onStop: () => void;
 }
 
-export function ChatInput({ value, disabled, streaming, onChange, onSend, onStop }: ChatInputProps) {
+export function ChatInput({
+  value,
+  modelName,
+  modelColor,
+  disabled,
+  streaming,
+  onChange,
+  onOpenModelModal,
+  onSend,
+  onStop,
+}: ChatInputProps) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -47,6 +60,11 @@ export function ChatInput({ value, disabled, streaming, onChange, onSend, onStop
               disabled
             >
               📎
+            </button>
+            <button className="input-model-selector" type="button" onClick={onOpenModelModal} aria-label="选择模型">
+              <span className="model-dot" style={{ background: modelColor || "var(--accent)" }} />
+              <span className="input-model-name">{modelName}</span>
+              <span className="input-model-caret">▾</span>
             </button>
             {streaming ? (
               <button className="stop-btn" type="button" onClick={onStop} aria-label="停止生成">

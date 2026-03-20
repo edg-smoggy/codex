@@ -1,7 +1,10 @@
+import { useMemo, useState } from "react";
+
 import type { ConversationSummary } from "../../types/api";
 import type { UIModel } from "../../types/view";
 import { getModelMeta } from "../../mocks/modelCatalog";
 import { formatRelativeDateTime, initials } from "../../utils/format";
+import { SearchBar } from "../shared/SearchBar";
 
 interface ChatSidebarProps {
   username: string;
@@ -10,6 +13,7 @@ interface ChatSidebarProps {
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
+  onOpenSettings: () => void;
 }
 
 function resolveModel(modelId: string): UIModel {
@@ -29,7 +33,18 @@ export function ChatSidebar({
   onNewChat,
   onSelectConversation,
   onDeleteConversation,
+  onOpenSettings,
 }: ChatSidebarProps) {
+  const [search, setSearch] = useState("");
+
+  const filteredConversations = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) {
+      return conversations;
+    }
+    return conversations.filter((conversation) => conversation.title.toLowerCase().includes(keyword));
+  }, [conversations, search]);
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -43,12 +58,32 @@ export function ChatSidebar({
         </button>
       </div>
 
-      <div className="sidebar-section-title">最近对话</div>
+      <div className="sidebar-shortcuts">
+        <button
+          className="shortcut-item"
+          type="button"
+          onClick={() => {
+            const input = document.getElementById("sidebar-chat-search") as HTMLInputElement | null;
+            input?.focus();
+          }}
+        >
+          🔍 搜索对话
+        </button>
+        <button className="shortcut-item" type="button" onClick={onOpenSettings}>
+          ⚙️ 设置
+        </button>
+      </div>
+
+      <div className="sidebar-search-wrap">
+        <SearchBar value={search} onChange={setSearch} placeholder="搜索历史会话..." inputId="sidebar-chat-search" />
+      </div>
+
+      <div className="sidebar-section-title">历史会话</div>
       <div className="chat-list">
-        {conversations.length === 0 ? (
-          <div className="sidebar-empty">暂无对话，点击上方按钮开始</div>
+        {filteredConversations.length === 0 ? (
+          <div className="sidebar-empty">{search ? "没有匹配的会话" : "暂无对话，点击上方按钮开始"}</div>
         ) : (
-          conversations.map((conversation) => {
+          filteredConversations.map((conversation) => {
             const model = resolveModel(conversation.model);
             return (
               <div
