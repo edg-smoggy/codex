@@ -4,13 +4,10 @@ import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import type { MessageItem } from "../../types/api";
-import { useAuthStore } from "../../stores/authStore";
-import { formatTimeShort } from "../../utils/format";
 import { MessageActions } from "./MessageActions";
 
 interface ChatMessageProps {
   message: MessageItem;
-  modelName?: string;
   canRegenerate?: boolean;
   onRegenerate?: () => void;
 }
@@ -59,32 +56,37 @@ function MarkdownPre({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
   );
 }
 
-export function ChatMessage({ message, modelName, canRegenerate, onRegenerate }: ChatMessageProps) {
-  const username = useAuthStore((state) => state.bundle?.user.username || "U");
+function MarkdownTable({ children, ...props }: ComponentPropsWithoutRef<"table">) {
+  return (
+    <div className="table-container">
+      <table className="modern-table" {...props}>
+        {children}
+      </table>
+    </div>
+  );
+}
 
+export function ChatMessage({ message, canRegenerate, onRegenerate }: ChatMessageProps) {
   const isUser = message.role === "user";
-  const sender = isUser ? "你" : modelName || "AI";
-  const userInitial = username.charAt(0).toUpperCase() || "U";
 
   return (
-    <div className={isUser ? "message user-message" : "message"}>
-      <div className={isUser ? "message-avatar user-avatar-msg" : "message-avatar ai-avatar-msg"}>{isUser ? userInitial : "✦"}</div>
-      <div className="message-content">
-        <div className="message-header">
-          <span className="message-sender">{sender}</span>
-          <span className="message-time">{formatTimeShort(message.created_at)}</span>
-        </div>
-        <MessageActions
-          onCopy={() => copyToClipboard(message.content)}
-          canRegenerate={!isUser && canRegenerate}
-          onRegenerate={onRegenerate}
-        />
-        <div className="message-body markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={{ pre: MarkdownPre }}>
-            {message.content}
-          </ReactMarkdown>
-        </div>
-      </div>
+    <div className={isUser ? "msg-block is-user" : "msg-block is-ai"}>
+      {isUser ? (
+        <div className="bubble-user">{message.content}</div>
+      ) : (
+        <>
+          <div className="bubble-ai rich-text">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeHighlight]}
+              components={{ pre: MarkdownPre, table: MarkdownTable }}
+            >
+              {message.content}
+            </ReactMarkdown>
+          </div>
+          <MessageActions onCopy={() => copyToClipboard(message.content)} canRegenerate={canRegenerate} onRegenerate={onRegenerate} />
+        </>
+      )}
     </div>
   );
 }

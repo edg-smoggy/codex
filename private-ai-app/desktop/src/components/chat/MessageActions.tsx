@@ -10,12 +10,12 @@ export function MessageActions({ canRegenerate, onCopy, onRegenerate }: MessageA
   const [copied, setCopied] = useState(false);
 
   return (
-    <div className="message-actions">
+    <div className="tool-bar">
       <button
-        className="msg-act-icon"
+        className="tool-btn"
         type="button"
-        title={copied ? "已复制" : "复制"}
-        aria-label="复制消息"
+        title={copied ? "已复制" : "复制全文"}
+        aria-label="复制全文"
         onClick={() => {
           void onCopy()
             .then(() => {
@@ -25,30 +25,30 @@ export function MessageActions({ canRegenerate, onCopy, onRegenerate }: MessageA
             .catch(() => undefined);
         }}
       >
-        {copied ? "✓" : "📋"}
+        {copied ? "✓" : "⎘"}
       </button>
 
       {canRegenerate && onRegenerate ? (
-        <button className="msg-act-icon" type="button" title="重新生成" aria-label="重新生成" onClick={onRegenerate}>
-          🔄
+        <button className="tool-btn" type="button" title="重新生成" aria-label="重新生成" onClick={onRegenerate}>
+          ↻
         </button>
       ) : null}
 
       <button
-        className="msg-act-icon"
+        className="tool-btn"
         type="button"
-        title="有帮助"
-        aria-label="有帮助"
+        title="赞同"
+        aria-label="赞同"
         onClick={() => window.alert("感谢反馈，我们已记录。")}
       >
         👍
       </button>
 
       <button
-        className="msg-act-icon"
+        className="tool-btn"
         type="button"
-        title="没有帮助"
-        aria-label="没有帮助"
+        title="反对"
+        aria-label="反对"
         onClick={() => window.alert("已收到反馈，我们会持续优化。")}
       >
         👎

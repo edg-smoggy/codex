@@ -8,7 +8,7 @@ import type {
   UsageDaily,
 } from "../types/api";
 import type { ChatService, SendMessageParams, SendMessageResult, StreamMessageParams } from "../types/services";
-import { API_BASE, parseResponse } from "./http";
+import { API_BASE, ApiError, parseResponse } from "./http";
 
 export async function getModels(accessToken: string): Promise<ModelInfo[]> {
   const resp = await fetch(`${API_BASE}/models`, {
@@ -36,6 +36,18 @@ export async function deleteConversation(accessToken: string, conversationId: st
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+  if (resp.status === 404) {
+    let detail = "当前后端版本缺少删除会话接口，请重启本地后端后再试。";
+    try {
+      const data = (await resp.json()) as { detail?: string };
+      if (data.detail && data.detail !== "Not Found") {
+        detail = data.detail;
+      }
+    } catch {
+      // ignore JSON parse errors and keep the version-mismatch hint
+    }
+    throw new ApiError(404, detail);
+  }
   await parseResponse<{ status: string }>(resp);
 }
 

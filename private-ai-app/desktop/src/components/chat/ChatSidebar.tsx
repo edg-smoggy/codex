@@ -1,13 +1,11 @@
 import { useMemo, useState } from "react";
 
 import type { ConversationSummary } from "../../types/api";
-import type { UIModel } from "../../types/view";
-import { getModelMeta } from "../../mocks/modelCatalog";
-import { formatRelativeDateTime, initials } from "../../utils/format";
-import { SearchBar } from "../shared/SearchBar";
+import { initials } from "../../utils/format";
 
 interface ChatSidebarProps {
   username: string;
+  roleLabel: string;
   conversations: ConversationSummary[];
   activeConversationId?: string;
   onNewChat: () => void;
@@ -16,18 +14,9 @@ interface ChatSidebarProps {
   onOpenSettings: () => void;
 }
 
-function resolveModel(modelId: string): UIModel {
-  const base = getModelMeta(modelId, modelId.includes("gemini") ? "gemini" : modelId.includes("moonshot") || modelId.includes("kimi") ? "kimi" : "openai");
-  return {
-    model: modelId,
-    provider: "unknown",
-    enabled: true,
-    ...base,
-  };
-}
-
 export function ChatSidebar({
   username,
+  roleLabel,
   conversations,
   activeConversationId,
   onNewChat,
@@ -39,97 +28,98 @@ export function ChatSidebar({
 
   const filteredConversations = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) {
-      return conversations;
-    }
+    if (!keyword) return conversations;
     return conversations.filter((conversation) => conversation.title.toLowerCase().includes(keyword));
   }, [conversations, search]);
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-header">
-        <div className="logo">
-          <div className="logo-icon">H</div>
-          <span className="logo-text">AI Hub</span>
+      <div className="brand-header">
+        <div className="logo-box">H</div>
+        <span className="brand-name">AI Hub</span>
+      </div>
+
+      <button className="btn-new-chat" type="button" onClick={onNewChat} aria-label="新建会话">
+        <div className="left-group">
+          <span className="btn-new-icon">＋</span>
+          新建会话
         </div>
-        <button className="new-chat-btn" type="button" onClick={onNewChat} aria-label="新建对话">
-          <span>＋</span>
-          <span>新建对话</span>
-        </button>
-      </div>
+        <span className="shortcut">⌘ K</span>
+      </button>
 
-      <div className="sidebar-shortcuts">
-        <button
-          className="shortcut-item"
-          type="button"
-          onClick={() => {
-            const input = document.getElementById("sidebar-chat-search") as HTMLInputElement | null;
-            input?.focus();
-          }}
-        >
-          🔍 搜索对话
-        </button>
-        <button className="shortcut-item" type="button" onClick={onOpenSettings}>
-          ⚙️ 设置
-        </button>
-      </div>
+      <div className="history-wrapper">
+        <div className="history-label">
+          <span className="history-label-icon">◷</span>
+          历史会话
+        </div>
 
-      <div className="sidebar-search-wrap">
-        <SearchBar value={search} onChange={setSearch} placeholder="搜索历史会话..." inputId="sidebar-chat-search" />
-      </div>
+        <div className="history-search-wrap">
+          <input
+            className="history-search"
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索会话..."
+            aria-label="搜索会话"
+          />
+        </div>
 
-      <div className="sidebar-section-title">历史会话</div>
-      <div className="chat-list">
         {filteredConversations.length === 0 ? (
-          <div className="sidebar-empty">{search ? "没有匹配的会话" : "暂无对话，点击上方按钮开始"}</div>
+          <div className="history-empty">{search ? "没有匹配的会话" : "暂无会话，点击上方新建"}</div>
         ) : (
-          filteredConversations.map((conversation) => {
-            const model = resolveModel(conversation.model);
-            return (
-              <div
-                key={conversation.id}
-                className={conversation.id === activeConversationId ? "chat-item active" : "chat-item"}
-                role="button"
-                tabIndex={0}
-                onClick={() => onSelectConversation(conversation.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onSelectConversation(conversation.id);
-                  }
+          filteredConversations.map((conversation) => (
+            <div
+              key={conversation.id}
+              className={conversation.id === activeConversationId ? "history-item active" : "history-item"}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelectConversation(conversation.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectConversation(conversation.id);
+                }
+              }}
+            >
+              <span className="history-item-title">{conversation.title}</span>
+              <button
+                className="chat-item-delete"
+                type="button"
+                aria-label="删除会话"
+                title="删除会话"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDeleteConversation(conversation.id);
                 }}
               >
-                <div className={`chat-item-icon ${model.bgClass}`}>{model.icon}</div>
-                <div className="chat-item-info">
-                  <div className="chat-item-title">{conversation.title}</div>
-                  <div className="chat-item-meta">
-                    {model.name} · {formatRelativeDateTime(conversation.updated_at)}
-                  </div>
-                </div>
-                <button
-                  className="chat-item-delete"
-                  type="button"
-                  aria-label="删除会话"
-                  title="删除会话"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteConversation(conversation.id);
-                  }}
-                >
-                  🗑
-                </button>
-              </div>
-            );
-          })
+                删除
+              </button>
+            </div>
+          ))
         )}
+
+        {conversations.length > 6 ? <div className="history-more">查看全部</div> : null}
       </div>
 
-      <div className="sidebar-footer">
-        <div className="user-avatar">{initials(username)}</div>
-        <div className="user-info">
-          <div className="user-name">{username}</div>
-          <div className="user-plan">● Private Plan</div>
-        </div>
+      <div className="sidebar-bottom">
+        <button
+          className="bottom-action"
+          type="button"
+          onClick={() => window.alert("移动端应用入口开发中")}
+          aria-label="查看手机应用"
+        >
+          <span>查看手机应用</span>
+          <span>📱</span>
+        </button>
+
+        <button className="bottom-action" type="button" onClick={onOpenSettings} aria-label="账号设置">
+          <div className="user-block">
+            <div className="avatar-box">{initials(username).slice(0, 1)}</div>
+            {username}
+            <span className="role-tag">{roleLabel}</span>
+          </div>
+          <span>⌄</span>
+        </button>
       </div>
     </aside>
   );
