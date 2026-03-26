@@ -21,7 +21,10 @@ use uuid::Uuid;
 
 const APP_DIR_NAME: &str = "AIHubDirect";
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-const DEFAULT_MAX_TOKENS: u32 = 4096;
+const DEFAULT_MAX_TOKENS: u32 = 8192;
+const CONNECT_TIMEOUT_SECONDS: u64 = 15;
+const MAX_AUTO_CONTINUATIONS: usize = 1;
+const CONTINUE_PROMPT: &str = "继续";
 
 #[derive(Clone)]
 struct DirectState {
@@ -32,7 +35,7 @@ struct DirectState {
 impl DirectState {
     fn new() -> Self {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
             .build()
             .expect("failed to build reqwest client");
 
@@ -341,6 +344,16 @@ fn parse_openai_stream_delta(payload: &Value) -> Option<String> {
     None
 }
 
+fn parse_openai_finish_reason(payload: &Value) -> Option<String> {
+    payload
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+}
+
 async fn stream_openai_like(
     client: &Client,
     provider: &ProviderConfig,
@@ -351,14 +364,6 @@ async fn stream_openai_like(
     window: &WebviewWindow,
     cancel: &Arc<AtomicBool>,
 ) -> Result<ProviderResult, String> {
-    let payload = json!({
-        "model": model,
-        "messages": messages,
-        "temperature": if provider.provider == "kimi" && model.starts_with("kimi-k2.5") { 1.0 } else { DEFAULT_TEMPERATURE },
-        "stream": true,
-        "max_tokens": DEFAULT_MAX_TOKENS,
-    });
-
     let mut overrides = vec![None];
     if provider.provider == "kimi" && thinking_mode == "thinking" {
         overrides = vec![
@@ -380,113 +385,163 @@ async fn stream_openai_like(
     }
 
     let mut full_content = String::new();
-    let mut usage_obj = Value::Null;
+    let mut total_input_tokens = 0_i64;
+    let mut total_output_tokens = 0_i64;
     let url = format!("{}/chat/completions", provider.base_url.trim_end_matches('/'));
+    for continuation in 0..=MAX_AUTO_CONTINUATIONS {
+        let request_messages = if continuation == 0 {
+            messages.to_vec()
+        } else {
+            let mut extended = messages.to_vec();
+            extended.push(json!({
+                "role": "assistant",
+                "content": full_content,
+            }));
+            extended.push(json!({
+                "role": "user",
+                "content": CONTINUE_PROMPT,
+            }));
+            extended
+        };
 
-    for (idx, override_payload) in overrides.into_iter().enumerate() {
-        let mut body = payload.clone();
-        if let Some(override_payload) = override_payload {
-            if let (Some(dst), Some(src)) = (body.as_object_mut(), override_payload.as_object()) {
-                for (key, value) in src {
-                    dst.insert(key.clone(), value.clone());
-                }
-            }
-        }
+        let payload = json!({
+            "model": model,
+            "messages": request_messages,
+            "temperature": if provider.provider == "kimi" && model.starts_with("kimi-k2.5") { 1.0 } else { DEFAULT_TEMPERATURE },
+            "stream": true,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+        });
 
-        let mut request = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", provider.api_key))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .json(&body);
+        let mut segment_content = String::new();
+        let mut usage_obj = Value::Null;
+        let mut finish_reason: Option<String> = None;
 
-        if provider.provider == "openrouter" {
-            if let Some(title) = &provider.title {
-                request = request.header("X-OpenRouter-Title", title);
-            }
-        }
-
-        let response = request.send().await.map_err(|err| format!("请求模型失败: {err}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
-            if provider.provider == "kimi" && thinking_mode == "thinking" && idx < 3 && [400_u16, 422_u16].contains(&status.as_u16()) {
-                continue;
-            }
-            return Err(if detail.is_empty() {
-                format!("provider 返回错误状态: {status}")
-            } else {
-                format!("provider 返回错误状态: {status} - {detail}")
-            });
-        }
-
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
-
-        while let Some(chunk) = stream.next().await {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            let bytes = chunk.map_err(|err| format!("读取流失败: {err}"))?;
-            let text = String::from_utf8_lossy(&bytes);
-            buffer.push_str(&text);
-
-            while let Some(pos) = buffer.find('\n') {
-                let line = buffer[..pos].trim_end_matches('\r').to_string();
-                buffer.drain(..=pos);
-                if !line.starts_with("data:") {
-                    continue;
-                }
-                let data = line.trim_start_matches("data:").trim();
-                if data.is_empty() {
-                    continue;
-                }
-                if data == "[DONE]" {
-                    break;
-                }
-
-                let payload: Value = match serde_json::from_str(data) {
-                    Ok(payload) => payload,
-                    Err(_) => continue,
-                };
-
-                if let Some(usage) = payload.get("usage") {
-                    usage_obj = usage.clone();
-                }
-
-                if let Some(delta) = parse_openai_stream_delta(&payload) {
-                    if !delta.is_empty() {
-                        full_content.push_str(&delta);
-                        let _ = window.emit(
-                            "chat://chunk",
-                            StreamChunkEvent {
-                                request_id: request_id.to_string(),
-                                delta,
-                            },
-                        );
+        for (idx, override_payload) in overrides.iter().enumerate() {
+            let mut body = payload.clone();
+            if let Some(override_payload) = override_payload {
+                if let (Some(dst), Some(src)) = (body.as_object_mut(), override_payload.as_object()) {
+                    for (key, value) in src {
+                        dst.insert(key.clone(), value.clone());
                     }
                 }
             }
+
+            let mut request = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", provider.api_key))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .json(&body);
+
+            if provider.provider == "openrouter" {
+                if let Some(title) = &provider.title {
+                    request = request.header("X-OpenRouter-Title", title);
+                }
+            }
+
+            let response = request.send().await.map_err(|err| format!("请求模型失败: {err}"))?;
+            let status = response.status();
+            if !status.is_success() {
+                let detail = response.text().await.unwrap_or_default();
+                if provider.provider == "kimi"
+                    && thinking_mode == "thinking"
+                    && idx < 3
+                    && [400_u16, 422_u16].contains(&status.as_u16())
+                {
+                    continue;
+                }
+                return Err(if detail.is_empty() {
+                    format!("provider 返回错误状态: {status}")
+                } else {
+                    format!("provider 返回错误状态: {status} - {detail}")
+                });
+            }
+
+            let mut stream = response.bytes_stream();
+            let mut buffer = String::new();
+            let mut saw_done = false;
+
+            while let Some(chunk) = stream.next().await {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let bytes = chunk.map_err(|err| format!("读取流失败: {err}"))?;
+                let text = String::from_utf8_lossy(&bytes);
+                buffer.push_str(&text);
+
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end_matches('\r').to_string();
+                    buffer.drain(..=pos);
+                    if !line.starts_with("data:") {
+                        continue;
+                    }
+                    let data = line.trim_start_matches("data:").trim();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    if data == "[DONE]" {
+                        saw_done = true;
+                        break;
+                    }
+
+                    let payload: Value = match serde_json::from_str(data) {
+                        Ok(payload) => payload,
+                        Err(_) => continue,
+                    };
+
+                    if let Some(usage) = payload.get("usage") {
+                        usage_obj = usage.clone();
+                    }
+                    if let Some(reason) = parse_openai_finish_reason(&payload) {
+                        finish_reason = Some(reason);
+                    }
+
+                    if let Some(delta) = parse_openai_stream_delta(&payload) {
+                        if !delta.is_empty() {
+                            segment_content.push_str(&delta);
+                            full_content.push_str(&delta);
+                            let _ = window.emit(
+                                "chat://chunk",
+                                StreamChunkEvent {
+                                    request_id: request_id.to_string(),
+                                    delta,
+                                },
+                            );
+                        }
+                    }
+                }
+
+                if saw_done {
+                    break;
+                }
+            }
+
+            let input_tokens = usage_obj
+                .get("prompt_tokens")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_else(|| count_message_tokens(&request_messages));
+            let output_tokens = usage_obj
+                .get("completion_tokens")
+                .and_then(|value| value.as_i64())
+                .unwrap_or_else(|| count_tokens(&segment_content));
+
+            total_input_tokens += input_tokens;
+            total_output_tokens += output_tokens;
+            break;
         }
 
-        break;
+        let truncated = matches!(finish_reason.as_deref(), Some("length"));
+        if cancel.load(Ordering::Relaxed) || !truncated || segment_content.is_empty() {
+            break;
+        }
     }
-
-    let input_tokens = usage_obj
-        .get("prompt_tokens")
-        .and_then(|value| value.as_i64())
-        .unwrap_or_else(|| count_message_tokens(messages));
-    let output_tokens = usage_obj
-        .get("completion_tokens")
-        .and_then(|value| value.as_i64())
-        .unwrap_or_else(|| count_tokens(&full_content));
 
     Ok(ProviderResult {
         provider: provider.provider.clone(),
         content: full_content,
-        input_tokens,
-        output_tokens,
-        cost: estimate_cost(&provider.provider, model, input_tokens, output_tokens),
+        input_tokens: total_input_tokens,
+        output_tokens: total_output_tokens,
+        cost: estimate_cost(&provider.provider, model, total_input_tokens, total_output_tokens),
     })
 }
 
@@ -500,97 +555,123 @@ async fn stream_gemini(
     cancel: &Arc<AtomicBool>,
 ) -> Result<ProviderResult, String> {
     let url = format!("{}/models/{}:streamGenerateContent", provider.base_url.trim_end_matches('/'), model);
-    let contents = messages
-        .iter()
-        .filter_map(|message| {
-            let role = message.get("role")?.as_str()?;
-            let text = message.get("content")?.as_str()?;
-            Some(json!({
-                "role": if role == "assistant" { "model" } else { "user" },
-                "parts": [{"text": text}],
-            }))
-        })
-        .collect::<Vec<_>>();
-
-    let body = json!({
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": DEFAULT_MAX_TOKENS,
-            "temperature": DEFAULT_TEMPERATURE
-        }
-    });
-
-    let response = client
-        .post(&url)
-        .query(&[("key", provider.api_key.as_str()), ("alt", "sse")])
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|err| format!("请求 Gemini 失败: {err}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let detail = response.text().await.unwrap_or_default();
-        return Err(if detail.is_empty() {
-            format!("Gemini 返回错误状态: {status}")
-        } else {
-            format!("Gemini 返回错误状态: {status} - {detail}")
-        });
-    }
-
     let mut full_content = String::new();
-    let mut usage_obj = Value::Null;
-    let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut total_input_tokens = 0_i64;
+    let mut total_output_tokens = 0_i64;
 
-    while let Some(chunk) = stream.next().await {
-        if cancel.load(Ordering::Relaxed) {
-            break;
+    for continuation in 0..=MAX_AUTO_CONTINUATIONS {
+        let request_messages = if continuation == 0 {
+            messages.to_vec()
+        } else {
+            let mut extended = messages.to_vec();
+            extended.push(json!({
+                "role": "assistant",
+                "content": full_content,
+            }));
+            extended.push(json!({
+                "role": "user",
+                "content": CONTINUE_PROMPT,
+            }));
+            extended
+        };
+
+        let contents = request_messages
+            .iter()
+            .filter_map(|message| {
+                let role = message.get("role")?.as_str()?;
+                let text = message.get("content")?.as_str()?;
+                Some(json!({
+                    "role": if role == "assistant" { "model" } else { "user" },
+                    "parts": [{"text": text}],
+                }))
+            })
+            .collect::<Vec<_>>();
+
+        let body = json!({
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": DEFAULT_MAX_TOKENS,
+                "temperature": DEFAULT_TEMPERATURE
+            }
+        });
+
+        let response = client
+            .post(&url)
+            .query(&[("key", provider.api_key.as_str()), ("alt", "sse")])
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|err| format!("请求 Gemini 失败: {err}"))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(if detail.is_empty() {
+                format!("Gemini 返回错误状态: {status}")
+            } else {
+                format!("Gemini 返回错误状态: {status} - {detail}")
+            });
         }
-        let bytes = chunk.map_err(|err| format!("读取 Gemini 流失败: {err}"))?;
-        let text = String::from_utf8_lossy(&bytes);
-        buffer.push_str(&text);
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim_end_matches('\r').to_string();
-            buffer.drain(..=pos);
-            if !line.starts_with("data:") {
-                continue;
+        let mut segment_content = String::new();
+        let mut usage_obj = Value::Null;
+        let mut finish_reason: Option<String> = None;
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            if cancel.load(Ordering::Relaxed) {
+                break;
             }
-            let data = line.trim_start_matches("data:").trim();
-            if data.is_empty() {
-                continue;
-            }
+            let bytes = chunk.map_err(|err| format!("读取 Gemini 流失败: {err}"))?;
+            let text = String::from_utf8_lossy(&bytes);
+            buffer.push_str(&text);
 
-            let payload: Value = match serde_json::from_str(data) {
-                Ok(payload) => payload,
-                Err(_) => continue,
-            };
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim_end_matches('\r').to_string();
+                buffer.drain(..=pos);
+                if !line.starts_with("data:") {
+                    continue;
+                }
+                let data = line.trim_start_matches("data:").trim();
+                if data.is_empty() {
+                    continue;
+                }
 
-            if let Some(usage) = payload.get("usageMetadata") {
-                usage_obj = usage.clone();
-            }
+                let payload: Value = match serde_json::from_str(data) {
+                    Ok(payload) => payload,
+                    Err(_) => continue,
+                };
 
-            if let Some(candidates) = payload.get("candidates").and_then(|value| value.as_array()) {
-                for candidate in candidates {
-                    if let Some(parts) = candidate
-                        .get("content")
-                        .and_then(|value| value.get("parts"))
-                        .and_then(|value| value.as_array())
-                    {
-                        for part in parts {
-                            if let Some(text) = part.get("text").and_then(|value| value.as_str()) {
-                                if !text.is_empty() {
-                                    full_content.push_str(text);
-                                    let _ = window.emit(
-                                        "chat://chunk",
-                                        StreamChunkEvent {
-                                            request_id: request_id.to_string(),
-                                            delta: text.to_string(),
-                                        },
-                                    );
+                if let Some(usage) = payload.get("usageMetadata") {
+                    usage_obj = usage.clone();
+                }
+
+                if let Some(candidates) = payload.get("candidates").and_then(|value| value.as_array()) {
+                    for candidate in candidates {
+                        if let Some(reason) = candidate.get("finishReason").and_then(|value| value.as_str()) {
+                            finish_reason = Some(reason.to_string());
+                        }
+                        if let Some(parts) = candidate
+                            .get("content")
+                            .and_then(|value| value.get("parts"))
+                            .and_then(|value| value.as_array())
+                        {
+                            for part in parts {
+                                if let Some(text) = part.get("text").and_then(|value| value.as_str()) {
+                                    if !text.is_empty() {
+                                        segment_content.push_str(text);
+                                        full_content.push_str(text);
+                                        let _ = window.emit(
+                                            "chat://chunk",
+                                            StreamChunkEvent {
+                                                request_id: request_id.to_string(),
+                                                delta: text.to_string(),
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -598,23 +679,31 @@ async fn stream_gemini(
                 }
             }
         }
-    }
 
-    let input_tokens = usage_obj
-        .get("promptTokenCount")
-        .and_then(|value| value.as_i64())
-        .unwrap_or_else(|| count_message_tokens(messages));
-    let output_tokens = usage_obj
-        .get("candidatesTokenCount")
-        .and_then(|value| value.as_i64())
-        .unwrap_or_else(|| count_tokens(&full_content));
+        let input_tokens = usage_obj
+            .get("promptTokenCount")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_else(|| count_message_tokens(&request_messages));
+        let output_tokens = usage_obj
+            .get("candidatesTokenCount")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_else(|| count_tokens(&segment_content));
+
+        total_input_tokens += input_tokens;
+        total_output_tokens += output_tokens;
+
+        let truncated = matches!(finish_reason.as_deref(), Some("MAX_TOKENS"));
+        if cancel.load(Ordering::Relaxed) || !truncated || segment_content.is_empty() {
+            break;
+        }
+    }
 
     Ok(ProviderResult {
         provider: provider.provider.clone(),
         content: full_content,
-        input_tokens,
-        output_tokens,
-        cost: estimate_cost(&provider.provider, model, input_tokens, output_tokens),
+        input_tokens: total_input_tokens,
+        output_tokens: total_output_tokens,
+        cost: estimate_cost(&provider.provider, model, total_input_tokens, total_output_tokens),
     })
 }
 
