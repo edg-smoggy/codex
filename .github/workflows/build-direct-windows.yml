@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          registry-url: "https://registry.npmjs.org"
           cache: "npm"
           cache-dependency-path: "private-ai-direct-app/package-lock.json"
 
@@ -69,7 +70,9 @@ jobs:
 
       - name: Install frontend deps
         working-directory: private-ai-direct-app
-        run: npm ci
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          npm ci
 
       - name: Build Windows installer
         working-directory: private-ai-direct-app
