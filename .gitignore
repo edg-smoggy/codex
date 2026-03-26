@@ -6,4 +6,6 @@ private_ai_local.db
 **/.env.local
 **/.venv/
 **/__pycache__/
+**/src-tauri/target/
 *.log
+private-ai-direct-app/src-tauri/resources/providers.json

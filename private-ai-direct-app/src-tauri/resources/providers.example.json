@@ -1,0 +1,26 @@
+{
+  "providers": [
+    {
+      "provider": "gemini",
+      "api_key": "",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "models": ["gemini-2.0-flash", "gemini-1.5-pro"],
+      "enabled": true
+    },
+    {
+      "provider": "kimi",
+      "api_key": "",
+      "base_url": "https://api.moonshot.cn/v1",
+      "models": ["kimi-k2.5", "moonshot-v1-8k", "moonshot-v1-32k"],
+      "enabled": true
+    },
+    {
+      "provider": "openrouter",
+      "api_key": "",
+      "base_url": "https://openrouter.ai/api/v1",
+      "models": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6"],
+      "enabled": true,
+      "title": "AI Hub Direct"
+    }
+  ]
+}
