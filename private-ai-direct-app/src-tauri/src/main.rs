@@ -194,11 +194,29 @@ fn conversations_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("conversations.json"))
 }
 
+fn has_usable_provider_config(raw: &str) -> bool {
+    serde_json::from_str::<ProvidersFile>(raw)
+        .map(|config| {
+            config
+                .providers
+                .iter()
+                .any(|provider| provider.enabled && !provider.api_key.trim().is_empty() && !provider.models.is_empty())
+        })
+        .unwrap_or(false)
+}
+
 fn ensure_seed_files() -> Result<(), String> {
     let providers = providers_path()?;
+    let bundled_providers = include_str!("../resources/providers.json");
     if !providers.exists() {
-        fs::write(&providers, include_str!("../resources/providers.json"))
+        fs::write(&providers, bundled_providers)
             .map_err(|err| format!("写入默认 providers.json 失败: {err}"))?;
+    } else if has_usable_provider_config(bundled_providers) {
+        let local_providers = fs::read_to_string(&providers).unwrap_or_default();
+        if !has_usable_provider_config(&local_providers) {
+            fs::write(&providers, bundled_providers)
+                .map_err(|err| format!("恢复默认 providers.json 失败: {err}"))?;
+        }
     }
 
     let conversations = conversations_path()?;
